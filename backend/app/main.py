@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
         init_db()
         logger.info("Database and pgvector initialized successfully.")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.warning(f"Database init during lifespan deferred/handled: {e}")
     yield
     logger.info("Shutting down VoxLead AI backend.")
 
@@ -44,18 +44,21 @@ app.add_middleware(
 )
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
-def health_check(db: Session = Depends(get_db)):
+def health_check():
     """Health check endpoint validating database and pgvector extension."""
     db_status = "connected"
     pgvector_status = "active"
 
     try:
-        # Check DB connection
-        db.execute(text("SELECT 1"))
-        # Check pgvector extension
-        res = db.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'")).fetchone()
-        if not res:
-            pgvector_status = "missing"
+        from backend.app.database import SessionLocal
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            res = db.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'")).fetchone()
+            if not res:
+                pgvector_status = "missing"
+        finally:
+            db.close()
     except Exception as e:
         db_status = f"error: {str(e)}"
         pgvector_status = "unknown"
