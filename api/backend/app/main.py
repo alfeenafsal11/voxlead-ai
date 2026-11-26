@@ -16,22 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voxlead")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Initializing VoxLead AI backend...")
-    try:
-        init_db()
-        logger.info("Database and pgvector initialized successfully.")
-    except Exception as e:
-        logger.warning(f"Database init during lifespan deferred/handled: {e}")
-    yield
-    logger.info("Shutting down VoxLead AI backend.")
-
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description="Autonomous AI Sales Voice Agent MVP with RAG, Lead Intelligence, and Business Integrations",
-    lifespan=lifespan,
 )
 
 # CORS configuration
@@ -42,6 +30,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/ping", tags=["System"])
+@app.get("/api/ping", tags=["System"])
+def ping():
+    return {"status": "ok", "app": "VoxLead AI"}
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 @app.get("/api/health", response_model=HealthResponse, tags=["System"])
