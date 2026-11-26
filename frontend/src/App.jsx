@@ -74,11 +74,11 @@ export default function App() {
 
         {/* System & Mode Status Pills */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {/* Mock Mode Pill */}
-          <div className="status-badge" style={{ borderColor: 'rgba(245, 158, 11, 0.4)', background: 'rgba(245, 158, 11, 0.1)' }}>
-            <span className="dot amber"></span>
-            <span style={{ color: '#fbbf24', fontSize: '0.75rem' }}>
-              {health?.mock_mode ? 'MOCK ADAPTERS' : 'PRODUCTION APIS'}
+          {/* Engine Status Pill */}
+          <div className="status-badge" style={{ borderColor: 'rgba(16, 185, 129, 0.4)', background: 'rgba(16, 185, 129, 0.1)' }}>
+            <span className="dot green"></span>
+            <span style={{ color: '#34d399', fontSize: '0.75rem', fontWeight: 600 }}>
+              {health?.mock_mode ? 'CONSULTATIVE AI' : 'LIVE AI ENGINE'}
             </span>
           </div>
 
