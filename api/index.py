@@ -395,15 +395,18 @@ def retrieve_rag_chunks(query: str, top_k: int = 2) -> List[Dict[str, Any]]:
 def generate_llm_consultative_summary(user_message: str, chunk_content: str, chunk_title: str, customer_name: str, company: str, language: str) -> Optional[str]:
     """
     Summarize RAG retrieved knowledge into a warm, natural, consultative sales voice response.
-    Returns None if OpenAI is unconfigured or quota-exhausted.
+    Returns None if OpenAI is unconfigured, offline, or quota-exhausted.
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, timeout=3.5)
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
         sys_prompt = (
             f"You are Ava, a warm, professional, consultative AI sales representative from VoxLead AI speaking directly "
             f"with {customer_name} from {company} on a live voice phone call.\n"
@@ -414,20 +417,26 @@ def generate_llm_consultative_summary(user_message: str, chunk_content: str, chu
             f"4. Always end with an engaging consultative follow-up question.\n"
             f"5. Answer in {'Hindi' if language == 'hi' else 'English'}."
         )
-        resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=[
+        payload = json.dumps({
+            "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": f"Knowledge Source ({chunk_title}):\n{chunk_content}\n\nProspect said: \"{user_message}\""}
             ],
-            max_tokens=140,
-            temperature=0.6
-        )
-        content = resp.choices[0].message.content.strip()
-        if content:
-            return content
+            "max_tokens": 140,
+            "temperature": 0.6
+        }).encode("utf-8")
+
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            choices = data.get("choices", [])
+            if choices:
+                content = choices[0].get("message", {}).get("content", "").strip()
+                if content:
+                    return content
     except Exception as e:
-        logger.info(f"OpenAI LLM summarization fallback triggered: {e}")
+        print(f"OpenAI LLM summarization fallback: {e}")
         return None
 
 @app.post("/voice/turn")
