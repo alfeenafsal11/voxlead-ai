@@ -392,6 +392,44 @@ def retrieve_rag_chunks(query: str, top_k: int = 2) -> List[Dict[str, Any]]:
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]
 
+def generate_llm_consultative_summary(user_message: str, chunk_content: str, chunk_title: str, customer_name: str, company: str, language: str) -> Optional[str]:
+    """
+    Summarize RAG retrieved knowledge into a warm, natural, consultative sales voice response.
+    Returns None if OpenAI is unconfigured or quota-exhausted.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, timeout=3.5)
+        sys_prompt = (
+            f"You are Ava, a warm, professional, consultative AI sales representative from VoxLead AI speaking directly "
+            f"with {customer_name} from {company} on a live voice phone call.\n"
+            f"Rules:\n"
+            f"1. Summarize the answer in 2 to 3 natural, friendly, spoken sentences based strictly on the retrieved knowledge.\n"
+            f"2. NEVER say 'Regarding your question', do NOT quote the user's prompt verbatim, and do NOT recite raw technical architecture formulas.\n"
+            f"3. Speak directly to {customer_name} as a helpful human consultant.\n"
+            f"4. Always end with an engaging consultative follow-up question.\n"
+            f"5. Answer in {'Hindi' if language == 'hi' else 'English'}."
+        )
+        resp = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Knowledge Source ({chunk_title}):\n{chunk_content}\n\nProspect said: \"{user_message}\""}
+            ],
+            max_tokens=140,
+            temperature=0.6
+        )
+        content = resp.choices[0].message.content.strip()
+        if content:
+            return content
+    except Exception as e:
+        logger.info(f"OpenAI LLM summarization fallback triggered: {e}")
+        return None
+
 @app.post("/voice/turn")
 @app.post("/api/voice/turn")
 def process_voice_turn(body: Dict[str, Any] = Body(...)):
@@ -494,103 +532,142 @@ def process_voice_turn(body: Dict[str, Any] = Body(...)):
         if retrieved:
             sources = [{"title": r["title"], "filename": r["filename"], "similarity": r["similarity"]} for r in retrieved]
             top_chunk_id = retrieved[0]["chunk"]["id"]
+            top_content = retrieved[0]["chunk"]["content"]
+            top_title = retrieved[0]["title"]
 
-            if top_chunk_id == "discounts_and_poc" or any(r["chunk"]["id"] == "discounts_and_poc" for r in retrieved):
-                if is_hindi:
-                    response_text = (
-                        f"{company} के लिए हमारे सभी एनुअल कॉन्ट्रैक्ट्स पर 20% का सीधा डिस्काउंट उपलब्ध है। "
-                        "इसके अतिरिक्त, 45 प्रतिनिधियों की एंटरप्राइज़ टीम के लिए मल्टी-ईयर एग्रीमेंट्स पर 10% तक का अतिरिक्त वॉल्यूम डिस्काउंट मिलता है। "
-                        "साथ ही, डेमो के बाद हम 14 दिनों का फ़ुल-फ़ीचर्ड Proof of Concept (PoC) भी देते हैं ताकि आप इसे रिस्क-फ्री टेस्ट कर सकें।"
-                    )
-                else:
-                    response_text = (
-                        f"For {company}, we provide an automatic 20% discount on all annual agreements across all tiers. "
-                        "For a team of 45 sales reps evaluating our Enterprise tier, multi-year commitments also qualify for up to an additional 10% volume discount. "
-                        "Furthermore, all prospective enterprise clients receive a 14-day fully featured Proof of Concept (PoC) sandbox trial following an architect-led demo. "
-                        "Shall we book a quick 15-minute demo to set that up for your team?"
-                    )
+            # Attempt real-time LLM summarization first
+            llm_summary = generate_llm_consultative_summary(
+                user_message=message,
+                chunk_content=top_content,
+                chunk_title=top_title,
+                customer_name=customer_name,
+                company=company,
+                language=language
+            )
 
-            elif top_chunk_id == "enterprise_sizing":
-                if is_hindi:
-                    response_text = (
-                        f"45 सेल्स प्रतिनिधियों की टीम के लिए हमारा Enterprise टियर सबसे उपयुक्त है। इसमें डेडिकेटेड सॉल्यूशन आर्किटेक्ट, "
-                        "अनलिमिटेड AI वॉयस मिनट्स और कस्टम CRM माइग्रेशन शामिल हैं। टिपिकल एनुअल इन्वेस्टमेंट $50,000 से $70,000 के बीच होता है।"
-                    )
-                else:
-                    response_text = (
-                        f"With 45 sales reps, {company} fits directly into our Enterprise tier (tailored for teams of 20+ seats). "
-                        "Typical annual enterprise contracts for 45 reps range between $50,000 and $70,000, including dedicated onboarding, "
-                        "custom HubSpot or Salesforce migration, and unlimited autonomous voice minutes. Does that align with your planned budget?"
-                    )
-
-            elif top_chunk_id == "pricing_tiers":
-                if is_hindi:
-                    response_text = (
-                        "VoxLead CRM के तीन मुख्य प्लान हैं: Starter प्लान $29/माह प्रति यूज़र है, "
-                        "Professional प्लान $49/माह है जिसमें एडवांस्ड ऑटोमेशन मिलता है, और Enterprise प्लान $79/माह है "
-                        "जिसमें अनलिमिटेड AI वॉयस कॉलिंग और कस्टम RAG वर्कफ़्लो शामिल हैं। आपकी टीम के लिए कौन सा बेहतर रहेगा?"
-                    )
-                else:
-                    response_text = (
-                        f"For {company}, our pricing offers three straightforward tiers: Starter at $29/user/month, "
-                        "Professional at $49/user/month (popular for growing teams with CRM sync), and Enterprise at $79/user/month "
-                        "with unlimited autonomous AI calling, custom RAG integrations, and dedicated support. All plans include a 14-day trial."
-                    )
-
-            elif top_chunk_id == "spreadsheet_objection":
-                if is_hindi:
-                    response_text = (
-                        "कई टीमें शुरुआत में स्प्रेडशीट पर काम करती हैं, लेकिन टीम बढ़ने पर 40% समय डेटा एंट्री में बर्बाद होता है। "
-                        "VoxLead सीधे आपकी कॉल्स से डेटा निकालकर CRM में डालता है ताकि आपके प्रतिनिधि केवल बिक्री पर ध्यान दें।"
-                    )
-                else:
-                    response_text = (
-                        "Managing lead pipelines in spreadsheets is very common, but sales leaders typically find that up to 40% "
-                        "of rep time is lost to manual entry, with high drop-off rates on follow-ups. VoxLead automatically logs calls, "
-                        "transcribes customer objections, and updates your CRM instantly so your reps can focus purely on closing."
-                    )
-
-            elif top_chunk_id == "compliance_security":
-                if is_hindi:
-                    response_text = (
-                        f"VoxLead SOC 2 Type II सर्टिफाइड और पूरी तरह HIPAA कंप्लायंट है। Lumina Health जैसे हेल्थकेयर ग्राहकों के लिए "
-                        "हम Business Associate Agreement (BAA) भी साइन करते हैं। सारा ऑडियो और डेटा AES-256 से एनक्रिप्टेड रहता है।"
-                    )
-                else:
-                    response_text = (
-                        f"VoxLead is SOC 2 Type II certified and fully HIPAA compliant. For healthcare and life sciences organizations like {company}, "
-                        "we provide signed Business Associate Agreements (BAAs). All voice recordings and CRM transactions are encrypted with TLS 1.3 in transit and AES-256 at rest."
-                    )
-
-            elif top_chunk_id == "crm_integration":
-                if is_hindi:
-                    response_text = (
-                        "VoxLead आपके मौजूदा HubSpot या Salesforce CRM के साथ मिलकर काम करता है, उसे बदलने की ज़रूरत नहीं है। "
-                        "यह 24/7 कॉल्स अटेंड करता है, लीड्स को क्वालिफाई करता है और डेटा को आपके CRM में रीयल-टाइम में सिंक करता है।"
-                    )
-                else:
-                    response_text = (
-                        "VoxLead is built to operate directly alongside your existing HubSpot or Salesforce instance rather than replace it. "
-                        "It acts as a 24/7 AI voice qualification layer that answers inbound calls, scores BANT criteria, and logs deals right into your CRM."
-                    )
-
+            if llm_summary:
+                response_text = llm_summary
             else:
-                response_text = (
-                    f"Regarding '{message}': {retrieved[0]['chunk']['content']} "
-                    f"Would you like to explore how this applies specifically to {company}?"
-                )
+                # Consultative natural voice synthesis fallback
+                if top_chunk_id == "multilingual_voice":
+                    if is_hindi:
+                        response_text = (
+                            f"जी बिल्कुल! VoxLead हिंदी और अंग्रेज़ी दोनों भाषाओं में बहुत ही सहज और स्वाभाविक तरीके से बात करता है। "
+                            "साथ ही हमारे Enterprise टियर में स्पैनिश और फ्रेंच भी उपलब्ध हैं। क्या Lumina Health के लिए मल्टीलिंगुअल कॉलिंग मददगार रहेगी?"
+                        )
+                    else:
+                        response_text = (
+                            f"Yes, absolutely! VoxLead natively conducts fluent sales conversations in both English and Hindi with sub-second interruption handling. "
+                            f"We also support additional languages like Spanish and French on our Enterprise tier. Would multilingual calling be valuable for your reps at {company}?"
+                        )
+
+                elif top_chunk_id == "discounts_and_poc" or any(r["chunk"]["id"] == "discounts_and_poc" for r in retrieved):
+                    if is_hindi:
+                        response_text = (
+                            f"{company} के लिए हमारे सभी एनुअल कॉन्ट्रैक्ट्स पर 20% का सीधा डिस्काउंट उपलब्ध है। "
+                            "इसके अतिरिक्त, 45 प्रतिनिधियों की एंटरप्राइज़ टीम के लिए मल्टी-ईयर एग्रीमेंट्स पर 10% तक का अतिरिक्त वॉल्यूम डिस्काउंट मिलता है। "
+                            "साथ ही, डेमो के बाद हम 14 दिनों का फ़ुल-फ़ीचर्ड Proof of Concept (PoC) भी देते हैं ताकि आप इसे रिस्क-फ्री टेस्ट कर सकें।"
+                        )
+                    else:
+                        response_text = (
+                            f"For {company}, we provide an automatic 20% discount on all annual agreements across all tiers. "
+                            "For a team of 45 sales reps evaluating our Enterprise tier, multi-year commitments also qualify for up to an additional 10% volume discount. "
+                            "Furthermore, all prospective enterprise clients receive a 14-day fully featured Proof of Concept (PoC) sandbox trial following an architect-led demo. "
+                            "Shall we book a quick 15-minute demo to set that up for your team?"
+                        )
+
+                elif top_chunk_id == "enterprise_sizing":
+                    if is_hindi:
+                        response_text = (
+                            f"45 सेल्स प्रतिनिधियों की टीम के लिए हमारा Enterprise टियर सबसे उपयुक्त है। इसमें डेडिकेटेड सॉल्यूशन आर्किटेक्ट, "
+                            "अनलिमिटेड AI वॉयस मिनट्स और कस्टम CRM माइग्रेशन शामिल हैं। टिपिकल एनुअल इन्वेस्टमेंट $50,000 से $70,000 के बीच होता है।"
+                        )
+                    else:
+                        response_text = (
+                            f"With 45 sales reps, {company} fits directly into our Enterprise tier (tailored for teams of 20+ seats). "
+                            "Typical annual enterprise contracts for 45 reps range between $50,000 and $70,000, including dedicated onboarding, "
+                            "custom HubSpot or Salesforce migration, and unlimited autonomous voice minutes. Does that align with your planned budget?"
+                        )
+
+                elif top_chunk_id == "pricing_tiers":
+                    if is_hindi:
+                        response_text = (
+                            "VoxLead CRM के तीन मुख्य प्लान हैं: Starter प्लान $29/माह प्रति यूज़र है, "
+                            "Professional प्लान $49/माह है जिसमें एडवांस्ड ऑटोमेशन मिलता है, और Enterprise प्लान $79/माह है "
+                            "जिसमें अनलिमिटेड AI वॉयस कॉलिंग और कस्टम RAG वर्कफ़्लो शामिल हैं। आपकी टीम के लिए कौन सा बेहतर रहेगा?"
+                        )
+                    else:
+                        response_text = (
+                            f"For {company}, our pricing offers three straightforward tiers: Starter at $29/user/month, "
+                            "Professional at $49/user/month (popular for growing teams with CRM sync), and Enterprise at $79/user/month "
+                            "with unlimited autonomous AI calling, custom RAG integrations, and dedicated support. All plans include a 14-day trial."
+                        )
+
+                elif top_chunk_id == "spreadsheet_objection":
+                    if is_hindi:
+                        response_text = (
+                            "कई टीमें शुरुआत में स्प्रेडशीट पर काम करती हैं, लेकिन टीम बढ़ने पर 40% समय डेटा एंट्री में बर्बाद होता है। "
+                            "VoxLead सीधे आपकी कॉल्स से डेटा निकालकर CRM में डालता है ताकि आपके प्रतिनिधि केवल बिक्री पर ध्यान दें।"
+                        )
+                    else:
+                        response_text = (
+                            "Managing lead pipelines in spreadsheets is very common, but sales leaders typically find that up to 40% "
+                            "of rep time is lost to manual entry, with high drop-off rates on follow-ups. VoxLead automatically logs calls, "
+                            "transcribes customer objections, and updates your CRM instantly so your reps can focus purely on closing."
+                        )
+
+                elif top_chunk_id == "compliance_security":
+                    if is_hindi:
+                        response_text = (
+                            f"VoxLead SOC 2 Type II सर्टिफाइड और पूरी तरह HIPAA कंप्लायंट है। {company} जैसे हेल्थकेयर ग्राहकों के लिए "
+                            "हम Business Associate Agreement (BAA) भी साइन करते हैं। सारा ऑडियो और डेटा AES-256 से एनक्रिप्टेड रहता है।"
+                        )
+                    else:
+                        response_text = (
+                            f"VoxLead is SOC 2 Type II certified and fully HIPAA compliant. For healthcare organizations like {company}, "
+                            "we provide signed Business Associate Agreements (BAAs). All voice recordings and CRM transactions are encrypted with TLS 1.3 in transit and AES-256 at rest."
+                        )
+
+                elif top_chunk_id == "crm_integration":
+                    if is_hindi:
+                        response_text = (
+                            "VoxLead आपके मौजूदा HubSpot या Salesforce CRM के साथ मिलकर काम करता है, उसे बदलने की ज़रूरत नहीं है। "
+                            "यह 24/7 कॉल्स अटेंड करता है, लीड्स को क्वालिफाई करता है और डेटा को आपके CRM में रीयल-टाइम में सिंक करता है।"
+                        )
+                    else:
+                        response_text = (
+                            "VoxLead is built to operate directly alongside your existing HubSpot or Salesforce instance rather than replace it. "
+                            "It acts as a 24/7 AI voice qualification layer that answers inbound calls, scores BANT criteria, and logs deals right into your CRM."
+                        )
+
+                elif top_chunk_id == "onboarding_and_deployment":
+                    if is_hindi:
+                        response_text = (
+                            f"स्टार्टर और प्रोफेशनल प्लान्स में टीम केवल 1 दिन में लाइव हो जाती है। {company} के लिए कस्टम CRM इंटीग्रेशन और "
+                            "माइग्रेशन में केवल 7 से 10 दिन का समय लगता है। आप इसे कब तक शुरू करना चाहते हैं?"
+                        )
+                    else:
+                        response_text = (
+                            f"For our Starter and Professional plans, your sales team can be fully live in under one business day. "
+                            f"For an Enterprise deployment with custom CRM field mapping and historical migration, rollout is completed within 7 to 10 business days. How soon is {company} looking to deploy?"
+                        )
+
+                else:
+                    response_text = (
+                        f"VoxLead AI is designed to automate lead qualification, answer technical customer queries using real-time RAG, "
+                        f"and keep your pipelines updated without admin burden for {company}. Would you like to see a quick 15-minute live demonstration?"
+                    )
         else:
             # Fallback when no chunk score is high
             sources = [{"title": "Product Overview", "filename": "product_overview.md", "similarity": 0.88}]
             if is_hindi:
                 response_text = (
-                    f"जी बिल्कुल, मैंने आपकी बात नोट कर ली है: '{message}'। VoxLead आपकी टीम की प्रोडक्टिविटी को कई गुना बढ़ा सकता है। "
+                    f"जी बिल्कुल, मैंने आपकी बात नोट कर ली है। VoxLead AI {company} की सेल्स टीम की प्रोडक्टिविटी को कई गुना बढ़ा सकता है। "
                     "क्या आप हमारे प्राइसिंग प्लांस देखना चाहेंगे या एक लाइव डेमो शेड्यूल करना चाहेंगे?"
                 )
             else:
                 response_text = (
-                    f"Understood. Regarding '{message}': VoxLead AI is purpose-built to eliminate manual sales triage "
-                    f"and integrate directly with your workflows at {company}. "
+                    f"VoxLead AI is purpose-built to eliminate manual sales triage and integrate directly with your workflows at {company}. "
                     "Would you like to explore our pricing packages, or shall we book a tailored demo with our solution architects?"
                 )
 
