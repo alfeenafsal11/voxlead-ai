@@ -594,7 +594,7 @@ export default function LiveVoiceAgent() {
                     {/* Action Trigger Badge */}
                     {m.actionTriggered === 'book_appointment' && (
                       <div style={{ marginTop: '0.5rem', background: 'rgba(16, 185, 129, 0.2)', border: '1px solid rgba(16, 185, 129, 0.4)', color: '#34d399', padding: '0.25rem 0.5rem', borderRadius: 4, fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <Calendar size={12} /> Appointment Booked on Google Calendar & Synced to CRM
+                        <Calendar size={12} /> Product Demonstration Reserved for Tomorrow at 2:00 PM UTC
                       </div>
                     )}
 
@@ -781,10 +781,10 @@ export default function LiveVoiceAgent() {
               </p>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
               <div style={{ background: 'var(--bg-primary)', padding: '0.75rem', borderRadius: 6 }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Calculated Lead Score</span>
-                <div style={{ fontSize: '1.25rem', fontWeight: 700, color: '#fff' }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#fff', marginTop: '0.2rem' }}>
                   {callSummary.lead_score} / 100
                   <span className={`badge badge-${callSummary.lead_classification}`} style={{ marginLeft: '0.5rem', fontSize: '0.7rem', verticalAlign: 'middle' }}>
                     {callSummary.lead_classification}
@@ -792,9 +792,33 @@ export default function LiveVoiceAgent() {
                 </div>
               </div>
               <div style={{ background: 'var(--bg-primary)', padding: '0.75rem', borderRadius: 6 }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>HubSpot CRM Sync</span>
-                <div style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--success)', textTransform: 'capitalize', marginTop: '0.15rem' }}>
-                  {callSummary.crm_sync_status || 'Synced'}
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>HubSpot CRM</span>
+                <div style={{
+                  fontSize: '0.95rem',
+                  fontWeight: 600,
+                  color: callSummary.crm_sync_status === 'synced' ? 'var(--success)' : '#f59e0b',
+                  marginTop: '0.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}>
+                  <span className={`dot ${callSummary.crm_sync_status === 'synced' ? 'green' : 'amber'}`}></span>
+                  {callSummary.crm_sync_status === 'synced' ? 'Synced (Live)' : 'Not Connected (No Token)'}
+                </div>
+              </div>
+              <div style={{ background: 'var(--bg-primary)', padding: '0.75rem', borderRadius: 6 }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Google Calendar</span>
+                <div style={{
+                  fontSize: '0.95rem',
+                  fontWeight: 600,
+                  color: callSummary.appointment_status === 'booked' ? 'var(--success)' : callSummary.appointment_status === 'not_scheduled' ? 'var(--text-muted)' : '#f59e0b',
+                  marginTop: '0.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem'
+                }}>
+                  <span className={`dot ${callSummary.appointment_status === 'booked' ? 'green' : callSummary.appointment_status === 'not_scheduled' ? 'gray' : 'amber'}`}></span>
+                  {callSummary.appointment_status === 'booked' ? 'Booked (Live)' : callSummary.appointment_status === 'not_scheduled' ? 'Not Requested' : 'Missing Refresh Token'}
                 </div>
               </div>
             </div>
