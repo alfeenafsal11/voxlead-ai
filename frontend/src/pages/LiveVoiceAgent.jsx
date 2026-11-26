@@ -46,8 +46,34 @@ export default function LiveVoiceAgent() {
   // Live status
   const [liveLead, setLiveLead] = useState({ score: 0, classification: 'cold', sentiment: 'neutral' });
 
+  // Refs to avoid stale closures in Web Speech API callbacks
   const chatBottomRef = useRef(null);
   const recognitionRef = useRef(null);
+  const silenceTimerRef = useRef(null);
+  const speechBufferRef = useRef('');
+  const callActiveRef = useRef(false);
+  const callSessionRef = useRef(null);
+  const isMutedRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const processingRef = useRef(false);
+  const languageRef = useRef('en');
+  const customerNameRef = useRef('Alex Vance');
+  const companyRef = useRef('Lumina Health');
+  const messagesRef = useRef([]);
+  const sendTurnRef = useRef(null);
+
+  // Keep refs synchronized on every state change
+  useEffect(() => {
+    callActiveRef.current = callActive;
+    callSessionRef.current = callSession;
+    isMutedRef.current = isMuted;
+    isSpeakingRef.current = isSpeaking;
+    processingRef.current = processing;
+    languageRef.current = language;
+    customerNameRef.current = customerName;
+    companyRef.current = company;
+    messagesRef.current = messages;
+  });
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -56,8 +82,9 @@ export default function LiveVoiceAgent() {
   // Clean up speech synthesis & recognition on unmount
   useEffect(() => {
     return () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
+        try { recognitionRef.current.abort(); } catch (e) {}
       }
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
@@ -67,45 +94,83 @@ export default function LiveVoiceAgent() {
 
   // Text to Speech playback function
   const speakAssistantResponse = (text, lang) => {
-    if (!ttsEnabled || isMuted || !window.speechSynthesis) return;
+    if (!ttsEnabled || isMutedRef.current || !window.speechSynthesis) return;
 
     try {
       window.speechSynthesis.cancel(); // Stop any active speech
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = lang === 'hi' ? 'hi-IN' : 'en-US';
+      utterance.lang = (lang || languageRef.current) === 'hi' ? 'hi-IN' : 'en-US';
       utterance.rate = 1.0;
       utterance.pitch = 1.05;
 
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+        isSpeakingRef.current = true;
+      };
+
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        // Resume listening once Ava finishes speaking
+        if (callActiveRef.current && !isMutedRef.current) {
+          setTimeout(() => {
+            if (callActiveRef.current && !isMutedRef.current && !isSpeakingRef.current) {
+              startListening();
+            }
+          }, 200);
+        }
+      };
+
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        if (callActiveRef.current && !isMutedRef.current) {
+          startListening();
+        }
+      };
 
       window.speechSynthesis.speak(utterance);
     } catch (e) {
       console.warn('Speech synthesis error:', e);
       setIsSpeaking(false);
+      isSpeakingRef.current = false;
     }
   };
 
-  // Initialize Web Speech Recognition
-  const initSpeechRecognition = () => {
+  // Start Web Speech Recognition with safety guards
+  const startListening = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       console.warn('Web Speech API not supported in this browser.');
-      return null;
+      return;
+    }
+
+    if (!callActiveRef.current || isMutedRef.current) {
+      return;
+    }
+
+    // Safely cleanup existing recognition instance
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+      recognitionRef.current = null;
     }
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = language === 'hi' ? 'hi-IN' : 'en-US';
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = languageRef.current === 'hi' ? 'hi-IN' : 'en-US';
 
-      recognition.onstart = () => {
+      rec.onstart = () => {
         setIsListening(true);
       };
 
-      recognition.onresult = (event) => {
+      rec.onresult = (event) => {
+        // Prevent acoustic feedback while Ava is speaking
+        if (isSpeakingRef.current) return;
+
         let interim = '';
         let final = '';
 
@@ -118,34 +183,67 @@ export default function LiveVoiceAgent() {
           }
         }
 
-        setInterimSpeech(interim);
+        const spoken = (final || interim).trim();
+        if (spoken) {
+          setInterimSpeech(spoken);
+          speechBufferRef.current = (speechBufferRef.current ? speechBufferRef.current + ' ' : '') + final;
+        }
 
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+        }
+
+        // If SpeechRecognition produced a finalized sentence
         if (final.trim()) {
+          const textToSend = final.trim();
+          speechBufferRef.current = '';
           setInterimSpeech('');
-          handleSendTurn(final.trim());
+          if (sendTurnRef.current) {
+            sendTurnRef.current(textToSend);
+          }
+        } else if (interim.trim()) {
+          // Debounce: if user pauses speaking for 1300ms, dispatch interim speech
+          silenceTimerRef.current = setTimeout(() => {
+            if (!isSpeakingRef.current && !processingRef.current && interim.trim()) {
+              const textToSend = interim.trim();
+              speechBufferRef.current = '';
+              setInterimSpeech('');
+              if (sendTurnRef.current) {
+                sendTurnRef.current(textToSend);
+              }
+            }
+          }, 1300);
         }
       };
 
-      recognition.onerror = (event) => {
+      rec.onerror = (event) => {
         if (event.error !== 'no-speech') {
-          console.warn('Speech recognition error:', event.error);
+          console.warn('Speech recognition event:', event.error);
+        }
+        if (event.error === 'not-allowed') {
+          setIsListening(false);
+          alert('Microphone access was blocked. Please allow microphone access in your browser address bar.');
         }
       };
 
-      recognition.onend = () => {
+      rec.onend = () => {
         setIsListening(false);
-        // Automatically restart if call is active and unmuted
-        if (callActive && !isMuted) {
-          try {
-            recognition.start();
-          } catch (e) {}
+        // Automatically restart listening if call is active and unmuted
+        if (callActiveRef.current && !isMutedRef.current) {
+          setTimeout(() => {
+            if (callActiveRef.current && !isMutedRef.current && !isSpeakingRef.current) {
+              startListening();
+            }
+          }, 300);
         }
       };
 
-      return recognition;
+      rec.start();
+      recognitionRef.current = rec;
+      setIsListening(true);
     } catch (e) {
-      console.warn('Speech recognition initialization failed:', e);
-      return null;
+      console.warn('Speech recognition start failed:', e);
+      setIsListening(false);
     }
   };
 
@@ -153,7 +251,18 @@ export default function LiveVoiceAgent() {
   const handleStartCall = async () => {
     try {
       setProcessing(true);
+      processingRef.current = true;
       setCallSummary(null);
+
+      // Prompt browser microphone permission explicitly
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(track => track.stop());
+        } catch (micErr) {
+          console.warn('Microphone permission check:', micErr);
+        }
+      }
 
       const session = await startVoiceSession({
         participantName: customerName,
@@ -162,72 +271,99 @@ export default function LiveVoiceAgent() {
       });
 
       setCallSession(session);
+      callSessionRef.current = session;
       setCallActive(true);
+      callActiveRef.current = true;
 
       // Initial Greeting
       const initialGreeting = language === 'hi'
         ? `नमस्ते ${customerName}! मैं VoxLead AI से Ava हूँ। मैं ${company} के सेल्स प्रोसेस को ऑटोमेट करने में कैसे मदद कर सकती हूँ?`
         : `Hello ${customerName}! I am Ava from VoxLead AI. We help sales teams eliminate manual admin work and automate qualification. What are you looking to achieve with your sales pipeline at ${company}?`;
 
-      setMessages([{
+      const initialMsg = {
         id: 'msg-0',
         role: 'assistant',
         content: initialGreeting,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      }]);
+      };
 
+      setMessages([initialMsg]);
+      messagesRef.current = [initialMsg];
+
+      setProcessing(false);
+      processingRef.current = false;
+
+      // Speak Ava's initial greeting
       speakAssistantResponse(initialGreeting, language);
 
-      // Start Microphone Recognition
-      const rec = initSpeechRecognition();
-      if (rec) {
-        recognitionRef.current = rec;
-        try {
-          rec.start();
-        } catch (e) {}
-      }
+      // Begin listening for user's voice reply
+      startListening();
     } catch (err) {
-      alert(`Error starting session: ${err.message}`);
-    } finally {
       setProcessing(false);
+      processingRef.current = false;
+      alert(`Error starting session: ${err.message}`);
     }
   };
 
   // Handle Ending the Call & Generating Post-Call Summary
   const handleEndCall = async () => {
-    if (!callSession) return;
+    const session = callSessionRef.current || callSession;
+    if (!session) return;
+
     try {
       setProcessing(true);
+      processingRef.current = true;
 
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
+        try { recognitionRef.current.abort(); } catch (e) {}
+        recognitionRef.current = null;
       }
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
       setIsListening(false);
       setIsSpeaking(false);
+      isSpeakingRef.current = false;
+      callActiveRef.current = false;
+      setCallActive(false);
 
       const summary = await endVoiceSession({
-        callId: callSession.call_id,
-        customerName: customerName,
-        company: company,
-        messages: messages
+        callId: session.call_id,
+        customerName: customerNameRef.current,
+        company: companyRef.current,
+        messages: messagesRef.current.length > 0 ? messagesRef.current : messages
       });
 
       setCallSummary(summary);
-      setCallActive(false);
     } catch (err) {
       alert(`Error ending call: ${err.message}`);
     } finally {
       setProcessing(false);
+      processingRef.current = false;
     }
   };
 
   // Handle Sending a Voice or Text Turn
   const handleSendTurn = async (textToSend) => {
-    const text = textToSend || inputText;
-    if (!text.trim() || !callSession || processing) return;
+    const text = (textToSend !== undefined ? textToSend : inputText).trim();
+    const session = callSessionRef.current || callSession;
+
+    if (!text || !session) return;
+    if (processingRef.current) return;
+
+    // Barge-in: interrupt Ava if she is currently speaking
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      isSpeakingRef.current = false;
+    }
+
+    setProcessing(true);
+    processingRef.current = true;
+    setInputText('');
+    setInterimSpeech('');
+    speechBufferRef.current = '';
 
     const userMsg = {
       id: `msg-${Date.now()}`,
@@ -236,18 +372,19 @@ export default function LiveVoiceAgent() {
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setMessages(prev => [...prev, userMsg]);
-    setInputText('');
-    setInterimSpeech('');
-    setProcessing(true);
+    setMessages(prev => {
+      const updated = [...prev, userMsg];
+      messagesRef.current = updated;
+      return updated;
+    });
 
     try {
       const res = await sendVoiceTurn({
-        callId: callSession.call_id,
+        callId: session.call_id,
         message: text,
-        language: language,
-        customerName: customerName,
-        company: company,
+        language: languageRef.current,
+        customerName: customerNameRef.current,
+        company: companyRef.current,
       });
 
       const assistantMsg = {
@@ -259,37 +396,51 @@ export default function LiveVoiceAgent() {
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
-      setMessages(prev => [...prev, assistantMsg]);
+      setMessages(prev => {
+        const updated = [...prev, assistantMsg];
+        messagesRef.current = updated;
+        return updated;
+      });
+
       setLiveLead({
         score: res.lead_score,
         classification: res.lead_classification,
         sentiment: res.sentiment,
       });
 
-      if (res.language && res.language !== language) {
+      if (res.language && res.language !== languageRef.current) {
         setLanguage(res.language);
+        languageRef.current = res.language;
       }
 
+      setProcessing(false);
+      processingRef.current = false;
+
       // Speak Ava's response out loud
-      speakAssistantResponse(res.response_text, res.language || language);
+      speakAssistantResponse(res.response_text, res.language || languageRef.current);
     } catch (err) {
       console.error('Turn error:', err);
-    } finally {
       setProcessing(false);
+      processingRef.current = false;
     }
   };
+
+  // Wire up ref so async speech handlers can always call the latest turn handler
+  sendTurnRef.current = handleSendTurn;
 
   // Toggle Mute / Unmute
   const toggleMute = () => {
     if (isMuted) {
       setIsMuted(false);
-      if (recognitionRef.current && callActive) {
-        try { recognitionRef.current.start(); } catch (e) {}
+      isMutedRef.current = false;
+      if (callActiveRef.current) {
+        startListening();
       }
     } else {
       setIsMuted(true);
+      isMutedRef.current = true;
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
+        try { recognitionRef.current.abort(); } catch (e) {}
       }
       setIsListening(false);
     }
@@ -316,7 +467,10 @@ export default function LiveVoiceAgent() {
             <Globe size={14} color="var(--primary)" />
             <select
               value={language}
-              onChange={(e) => setLanguage(e.target.value)}
+              onChange={(e) => {
+                setLanguage(e.target.value);
+                languageRef.current = e.target.value;
+              }}
               style={{ background: 'transparent', color: '#fff', border: 'none', outline: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
             >
               <option value="en" style={{ background: '#1f2937' }}>English (US)</option>
@@ -334,13 +488,13 @@ export default function LiveVoiceAgent() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: 'var(--text-muted)' }}>
                 {callActive ? (
-                  isListening ? (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#34d399', fontWeight: 600 }}>
-                      <Mic size={16} /> Listening to your microphone...
-                    </span>
-                  ) : isSpeaking ? (
+                  isSpeaking ? (
                     <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#818cf8', fontWeight: 600 }}>
                       <Volume2 size={16} /> Ava is speaking...
+                    </span>
+                  ) : isListening ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#34d399', fontWeight: 600 }}>
+                      <Mic size={16} /> Microphone Live (Listening to you...)
                     </span>
                   ) : (
                     <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -409,7 +563,7 @@ export default function LiveVoiceAgent() {
               <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>Live Conversation Transcript</span>
               {callActive && (
                 <span className="badge badge-pos" style={{ fontSize: '0.7rem' }}>
-                  {isListening ? "Listening" : processing ? "Thinking" : "Online"}
+                  {isSpeaking ? "Speaking" : isListening ? "Listening" : processing ? "Thinking" : "Online"}
                 </span>
               )}
             </div>
@@ -419,7 +573,7 @@ export default function LiveVoiceAgent() {
                 <div style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto' }}>
                   <Phone size={32} style={{ margin: '0 auto 0.75rem', opacity: 0.4 }} />
                   <p>Click "Start Sales Call" to begin speaking with Ava</p>
-                  <p style={{ fontSize: '0.8rem', marginTop: '0.35rem' }}>You can speak directly into your microphone or type your response</p>
+                  <p style={{ fontSize: '0.8rem', marginTop: '0.35rem' }}>Speak directly into your microphone or type your response</p>
                 </div>
               ) : (
                 messages.map((m) => (
@@ -476,7 +630,7 @@ export default function LiveVoiceAgent() {
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
               <input
                 type="text"
-                placeholder={callActive ? "Speak into mic or type message here..." : "Start call to enable conversation..."}
+                placeholder={callActive ? (isListening ? "Listening... Speak now or type here..." : "Type message or click mic to speak...") : "Start call to enable conversation..."}
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => {
@@ -497,6 +651,29 @@ export default function LiveVoiceAgent() {
                   outline: 'none'
                 }}
               />
+              <button
+                className="btn btn-outline"
+                onClick={() => {
+                  if (!callActive) return;
+                  if (isListening) {
+                    if (speechBufferRef.current || interimSpeech) {
+                      handleSendTurn(speechBufferRef.current || interimSpeech);
+                    }
+                  } else {
+                    startListening();
+                  }
+                }}
+                disabled={!callActive || processing}
+                title={isListening ? "Microphone active (Click to force send)" : "Click to activate mic"}
+                style={{
+                  minWidth: '44px',
+                  background: isListening ? 'rgba(16, 185, 129, 0.2)' : undefined,
+                  borderColor: isListening ? '#10b981' : undefined,
+                  color: isListening ? '#34d399' : undefined
+                }}
+              >
+                {isListening ? <Mic size={16} /> : <MicOff size={16} />}
+              </button>
               <button
                 className="btn btn-primary"
                 onClick={() => handleSendTurn()}
