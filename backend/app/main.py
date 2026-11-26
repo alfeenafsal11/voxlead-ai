@@ -44,6 +44,7 @@ app.add_middleware(
 )
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
+@app.get("/api/health", response_model=HealthResponse, tags=["System"])
 def health_check():
     """Health check endpoint validating database and pgvector extension."""
     db_status = "connected"
@@ -72,6 +73,7 @@ def health_check():
     )
 
 @app.get("/ready", tags=["System"])
+@app.get("/api/ready", tags=["System"])
 def readiness_check():
     return {"status": "ready"}
 
