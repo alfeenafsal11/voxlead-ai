@@ -15,8 +15,13 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     DEFAULT_TENANT_ID: str = os.getenv("DEFAULT_TENANT_ID", "tenant-voxlead-demo")
 
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/voxlead")
+    # Database (supports DATABASE_URL, POSTGRES_URL, or NEON_DATABASE_URL)
+    DATABASE_URL: str = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("POSTGRES_URL")
+        or os.getenv("NEON_DATABASE_URL")
+        or "postgresql://postgres:postgres@localhost:5432/voxlead"
+    )
 
     # AI & Providers
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
